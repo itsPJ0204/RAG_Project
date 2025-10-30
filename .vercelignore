@@ -1,0 +1,4 @@
+# Exclude data and vector store directories and sqlite files from Vercel deployment
+/data/
+/vector_store/
+*.sqlite3
