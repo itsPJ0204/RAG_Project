@@ -3,7 +3,7 @@ name = "rag"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.12" # <--- FIXED: Now targeting Vercel's supported Python 3.12
 dependencies = [
     "chromadb>=1.2.2",
     "faiss-cpu>=1.12.0",
