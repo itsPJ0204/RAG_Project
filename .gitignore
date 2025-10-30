@@ -8,3 +8,8 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Data and large artifact exclusions
+data/
+data/vector_store/
+*.sqlite3
