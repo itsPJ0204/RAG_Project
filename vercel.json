@@ -1,0 +1,7 @@
+{
+  "ignore": [
+    "data/",
+    "vector_store/",
+    "*.sqlite3"
+  ]
+}
