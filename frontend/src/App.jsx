@@ -197,13 +197,13 @@ export default function App() {
               <Menu size={22} />
             </button>
             <Rocket className="text-accent" />
-            <h1 className="text-xl font-semibold">EntrepreneurAI</h1>
+            <h1 className="text-xl font-semibold">LogIQ</h1>
             <span
               className={`ml-2 text-sm ${
                 darkMode ? "text-gray-400" : "text-gray-500"
               }`}
             >
-              — Your startup strategy assistant
+              — Your personal business assistant
             </span>
           </div>
 
