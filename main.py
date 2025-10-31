@@ -301,7 +301,7 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
-gemini_api_key="AIzaSyDWWlFGoNySQZELl9nKSSOTYN3GJ0Orca8"
+gemini_api_key = os.environ.get("GEMINI_API_KEY")
 
 client = genai.Client(api_key=gemini_api_key)
 

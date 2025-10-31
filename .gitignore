@@ -13,3 +13,4 @@ wheels/
 data/
 data/vector_store/
 *.sqlite3
+.env
