@@ -1,0 +1,15 @@
+langchain==0.2.5
+langchain-core==0.2.14
+langchain-community==0.2.4
+langchain-text-splitters==0.2.1
+langchain-google-genai==3.0.0
+google-generativeai==0.7.0
+chromadb==0.5.3
+PyMuPDF-Binary==1.23.9
+pypdf==4.2.0
+numpy==1.26.4
+flask==3.0.3
+flask-cors==4.0.1
+gunicorn==22.0.0
+python-dotenv==1.0.1
+protobuf>=5.0.0,<7.0.0

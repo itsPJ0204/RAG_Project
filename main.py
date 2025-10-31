@@ -1,48 +1,51 @@
-
 import os
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
-from google import genai
-from sentence_transformers import SentenceTransformer
+import google.generativeai as genai
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 import chromadb
 import numpy as np
 from typing import List, Dict, Any
-
 # --- 1. INITIALIZE APP & LOAD ENVIRONMENT ---
-# Load environment variables from .env (for local) or Render dashboard (for production)
 load_dotenv()
-
 app = Flask(__name__)
-# Allow your React app (from any origin) to call this API
 CORS(app) 
-
-# --- 2. LOAD MODELS & DB (GLOBAL - Do this ONCE at startup) ---
 
 print("--- [STARTUP] LOADING MODELS AND DB ---")
 
-# Load Gemini LLM
+# --- CHANGED ---
+# Load API Key and configure the new SDK
 try:
     gemini_api_key = os.environ.get("GEMINI_API_KEY")
     if not gemini_api_key:
         raise ValueError("GEMINI_API_KEY not found. Set it in .env or Render dashboard.")
-    llm_client = genai.Client(api_key=gemini_api_key)
-    print("Gemini client loaded.")
+    
+    # Configure the Google AI SDK (used by both LLM and Embeddings)
+    genai.configure(api_key=gemini_api_key)
+    
+    # Load Gemini LLM using the new SDK
+    # Using 1.5-flash (2.5-flash is not a valid model name)
+    llm_model = genai.GenerativeModel("gemini-1.5-flash") 
+    print("Gemini model (gemini-1.5-flash) loaded.")
+
 except Exception as e:
     print(f"Error loading Gemini client: {e}")
-    llm_client = None
+    llm_model = None
 
-# Load Embedding Model
+# --- CHANGED ---
+# Load Embedding Model (via API, no memory usage)
 try:
-    embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
-    print("Embedding model (all-MiniLM-L6-v2) loaded.")
+    # We re-use the configured API key from above
+    embedding_model = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+    print("Google AI Embedding model (API) loaded.")
 except Exception as e:
-    print(f"Error loading embedding model: {e}")
+    print(f"Error loading Google AI embedding model: {e}")
     embedding_model = None
+# --- END CHANGED ---
 
 # Connect to the EXISTING Vector Store (built by ingest.py)
 try:
-    # IMPORTANT: The path must match the 'persist_directory' in ingest.py
     client_db = chromadb.PersistentClient(path="data/vector_store")
     collection = client_db.get_collection(name="pdf_documents")
     print(f"Connected to vector store. Documents in collection: {collection.count()}")
@@ -61,12 +64,16 @@ def retrieve_context(query: str, top_k: int = 5) -> List[Dict[str, Any]]:
         return []
     
     try:
-        query_embedding = embedding_model.encode([query])[0]
+        # --- CHANGED ---
+        # Use .embed_query() for single queries (returns List[float])
+        query_embedding = embedding_model.embed_query(query)
         
         results = collection.query(
-            query_embeddings=[query_embedding.tolist()],
+            # The embedding is already a list, no .tolist() needed
+            query_embeddings=[query_embedding], 
             n_results=top_k
         )
+        # --- END CHANGED ---
         
         retrieved_docs = []
         if results['documents'] and results['documents'][0]:
@@ -84,19 +91,18 @@ def retrieve_context(query: str, top_k: int = 5) -> List[Dict[str, Any]]:
 
 def generate_rag_response(query: str) -> str:
     """Generates a RAG response using the retrieved context and LLM."""
-    if llm_client is None:
+    # --- CHANGED ---
+    # Check the new model variable
+    if llm_model is None:
         return "Error: LLM client is not initialized."
 
-    # 1. Retrieve context
     results = retrieve_context(query)
     context = "\n\n".join([doc['content'] for doc in results]) if results else ""
 
-    # 2. Handle no context
     if not context:
         print("No relevant context found for query.")
         return "No relevant context was found in the documents to answer your question."
 
-    # 3. Build prompt
     prompt = f"""Use the following context to answer the question in brief but not too short.
     Context:
     {context}
@@ -105,13 +111,12 @@ def generate_rag_response(query: str) -> str:
 
     Answer:"""
 
-    # 4. Generate response
     try:
-        response = llm_client.models.generate_content(
-            model="gemini-2.5-flash", 
-            contents=prompt
-        )
+        # --- CHANGED ---
+        # Use the new SDK's generate_content method
+        response = llm_model.generate_content(prompt)
         return response.text
+        # --- END CHANGED ---
     except Exception as e:
         print(f"Error generating Gemini response: {e}")
         return "Error generating response from the AI model."
@@ -120,10 +125,6 @@ def generate_rag_response(query: str) -> str:
 
 @app.route("/api/chat", methods=["POST"])
 def chat_handler():
-    """
-    This is the main API endpoint that your React app will call.
-    It expects a JSON payload with a "query" key.
-    """
     try:
         data = request.json
         if not data or "query" not in data:
@@ -132,7 +133,6 @@ def chat_handler():
         query = data["query"]
         print(f"--- [REQUEST] Received query: {query[:50]}... ---")
         
-        # 5. Get the RAG response
         response_text = generate_rag_response(query)
         
         return jsonify({"response": response_text})

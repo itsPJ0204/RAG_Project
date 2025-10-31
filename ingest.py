@@ -1,15 +1,14 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-import os 
+import os
+from dotenv import load_dotenv 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pathlib import Path
 import numpy as np
-from sentence_transformers import SentenceTransformer
+import google.generativeai as genai
+from langchain_google_genai import GoogleGenerativeAIEmbeddings 
 import chromadb
 import uuid
-from typing import List, Dict, Any
+from typing import List, Dict, Any, List 
 
 # ### 1. Read all the pdfs inside the directory
 def process_all_pdfs(pdf_directory):
@@ -22,7 +21,6 @@ def process_all_pdfs(pdf_directory):
     for pdf_file in pdf_files:
         print(f"Processing: {pdf_file}")
         try:
-            # Using PyPDFLoader as in the original script
             loader=PyPDFLoader(str(pdf_file))
             documents=loader.load()
             for doc in documents:
@@ -49,34 +47,49 @@ def split_documents(documents, chunk_size=1000, chunk_overlap=200):
 
 # ### 3. Embedding Manager
 class EmbeddingManager:
-    def __init__(self, model_name: str="all-MiniLM-L6-v2"):
+    # --- CHANGED ---
+    # Default to Google's embedding model
+    def __init__(self, model_name: str="models/embedding-001"): 
         self.model_name=model_name
         self.model=None
         self._load_model()
 
     def _load_model(self):
         try:
+            # --- CHANGED ---
+            # Load API key and configure the Google AI client
             print(f"Loading embedding model: {self.model_name}")
-            self.model=SentenceTransformer(self.model_name)
-            print(f"Model Loaded Successfully. Embedding dimension: {self.model.get_sentence_embedding_dimension()}")
+            api_key = os.environ.get("GEMINI_API_KEY")
+            if not api_key:
+                raise ValueError("GEMINI_API_KEY not found. Set it in .env or Render dashboard.")
+            
+            genai.configure(api_key=api_key)
+            
+            # Initialize the LangChain embeddings class
+            self.model = GoogleGenerativeAIEmbeddings(model=self.model_name)
+            print("Google AI Embedding model loaded successfully.")
+            # --- END CHANGED ---
         except Exception as e:
             print(f"Error Loading Model: {self.model_name} : {e}")
             raise
 
-    def generate_embeddings(self,texts: list[str]) -> np.ndarray:
+    # --- CHANGED ---
+    # Updated return type hint
+    def generate_embeddings(self, texts: list[str]) -> List[List[float]]: 
         if not self.model:
             raise ValueError("Model Not Loaded") 
         
-        print(f"Generating embeddings for {len(texts)} texts...")
-        embeddings = self.model.encode(texts, show_progress_bar=True)
-        print(f"Generated embeddings with shape: {embeddings.shape}")
+        print(f"Generating embeddings for {len(texts)} texts via API...")
+        # --- CHANGED ---
+        # Use embed_documents() which returns List[List[float]]
+        embeddings = self.model.embed_documents(texts) 
+        print(f"Successfully generated {len(embeddings)} embeddings.")
         return embeddings
 
 # ### 4. VectorStore Manager
 class VectorStore:
     def __init__(self, collection_name: str = "pdf_documents", persist_directory: str = "data/vector_store"):
         self.collection_name = collection_name
-        # Set a stable, relative path for Render's persistent disk
         self.persist_directory = persist_directory
         self.collection = None
         self._initialize_store()
@@ -84,7 +97,6 @@ class VectorStore:
     def _initialize_store(self):
         try:
             os.makedirs(self.persist_directory, exist_ok=True)
-            # Use PersistentClient to save the DB to disk
             self.client = chromadb.PersistentClient(path=self.persist_directory) 
 
             self.collection = self.client.get_or_create_collection(
@@ -99,7 +111,9 @@ class VectorStore:
             print(f"Error Initializing vector store: {e}")
             raise
 
-    def add_documents(self, documents: List[Any], embeddings: np.ndarray):
+    # --- CHANGED ---
+    # Updated type hint for embeddings
+    def add_documents(self, documents: List[Any], embeddings: List[List[float]]): 
         if len(documents) != len(embeddings):
             raise ValueError("Number of documents must match number of embeddings")
 
@@ -120,7 +134,10 @@ class VectorStore:
             metadata_list.append(meta)
 
             documents_text.append(doc.page_content)
-            embeddings_list.append(embedding.tolist())
+            
+            # --- CHANGED ---
+            # The embedding is already a list[float], no .tolist() needed
+            embeddings_list.append(embedding) 
 
         try:
             self.collection.add(
@@ -139,24 +156,25 @@ class VectorStore:
 
 # --- This is the main execution block that runs the script ---
 if __name__ == "__main__":
+    # --- CHANGED ---
+    # Load .env variables (GEMINI_API_KEY) before starting
+    print("Loading environment variables...")
+    load_dotenv() 
+    
     print("--- [START] DATA INGESTION ---")
     
-    # 1. Load PDFs from the 'data/pdf' folder
     all_pdf_documents = process_all_pdfs("data/pdf")
     
     if all_pdf_documents:
-        # 2. Split into chunks
         chunks = split_documents(all_pdf_documents)
         
-        # 3. Initialize the tools
-        embedding_manager = EmbeddingManager()
+        # This will now use the Google API via EmbeddingManager
+        embedding_manager = EmbeddingManager() 
         vectorstore = VectorStore(persist_directory="data/vector_store")
         
-        # 4. Generate embeddings
         texts = [doc.page_content for doc in chunks]
         embeddings = embedding_manager.generate_embeddings(texts)
         
-        # 5. Add documents to the persistent database
         vectorstore.add_documents(chunks, embeddings)
         
         print("--- [SUCCESS] DATA INGESTION COMPLETE ---")
