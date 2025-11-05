@@ -1,0 +1,26 @@
+Ignore the Python virtual environment
+
+.venv/
+
+Ignore the raw PDF data (we only want the vector store)
+
+data/pdf/
+
+Ignore the ingestion script (not needed for the server)
+
+ingest.py
+
+Ignore Python cache files
+
+pycache/
+*.pyc
+*.pyo
+
+Ignore Git files
+
+.git/
+.gitignore
+
+Ignore any local environment files
+
+.env

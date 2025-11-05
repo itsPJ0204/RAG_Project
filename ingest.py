@@ -1,182 +1,166 @@
 import os
-from dotenv import load_dotenv 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pathlib import Path
-import numpy as np
-import google.generativeai as genai
-from langchain_google_genai import GoogleGenerativeAIEmbeddings 
 import chromadb
 import uuid
-from typing import List, Dict, Any, List 
+from typing import List, Any
+# This matches your requirements.txt
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from dotenv import load_dotenv
 
-# ### 1. Read all the pdfs inside the directory
-def process_all_pdfs(pdf_directory):
-    all_documents=[]
-    pdf_dir=Path(pdf_directory)
+# --- 1. LOAD ENVIRONMENT ---
+print("--- [INGESTION] LOADING ENVIRONMENT ---")
+load_dotenv()
+# No API keys are needed for local ingestion
 
-    pdf_files=list(pdf_dir.glob("**/*.pdf"))
-    print(f"Found {len(pdf_files)} pdf files")
+
+# --- 2. PDF PROCESSING ---
+def process_all_pdfs(pdf_directory: str) -> List[Any]:
+    """Finds all PDFs in a directory and loads them into memory."""
+    all_documents = []
+    pdf_dir = Path(pdf_directory)
+
+    pdf_files = list(pdf_dir.glob("**/*.pdf"))
+    print(f"--- [INGESTION] Found {len(pdf_files)} PDF files in {pdf_directory} ---")
 
     for pdf_file in pdf_files:
-        print(f"Processing: {pdf_file}")
+        print(f"--- [INGESTION] Processing: {pdf_file.name} ---")
         try:
-            loader=PyPDFLoader(str(pdf_file))
-            documents=loader.load()
+            loader = PyPDFLoader(str(pdf_file))
+            documents = loader.load()
             for doc in documents:
+                # Add metadata to each document chunk
                 doc.metadata['source_file'] = pdf_file.name
                 doc.metadata['file_type'] = "pdf"
             all_documents.extend(documents)
-            print(f"Loaded {len(documents)} pages")
+            print(f"--- [INGESTION] Loaded {len(documents)} pages from {pdf_file.name} ---")
         except Exception as e:
-            print(f"Error loading {pdf_file}: {e}")
-    print(f"\n Total Documents Loaded: {len(all_documents)}")
+            print(f"--- [INGESTION] Error loading {pdf_file}: {e} ---")
+            
+    print(f"\n--- [INGESTION] Total documents loaded: {len(all_documents)} ---")
     return all_documents
 
-# ### 2. Text Splitting get into chunks
-def split_documents(documents, chunk_size=1000, chunk_overlap=200):
-    text_splitter=RecursiveCharacterTextSplitter(
+# --- 3. TEXT SPLITTING ---
+def split_documents(documents: List[Any], chunk_size: int = 1000, chunk_overlap: int = 200) -> List[Any]:
+    """Splits loaded documents into smaller chunks."""
+    text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
         length_function=len,
-        separators=["\n\n", "\n", " ", ""]
+        separators=["\n\n", "\n", " ", ""] # Standard list of separators
     )
     split_docs = text_splitter.split_documents(documents)
-    print(f"Split {len(documents)} documents into {len(split_docs)} chunks")
+    print(f"--- [INGESTION] Split {len(documents)} documents into {len(split_docs)} chunks ---")
     return split_docs
 
-# ### 3. Embedding Manager
-class EmbeddingManager:
-    # --- CHANGED ---
-    # Default to Google's embedding model
-    def __init__(self, model_name: str="models/embedding-001"): 
-        self.model_name=model_name
-        self.model=None
-        self._load_model()
-
-    def _load_model(self):
-        try:
-            # --- CHANGED ---
-            # Load API key and configure the Google AI client
-            print(f"Loading embedding model: {self.model_name}")
-            api_key = os.environ.get("GEMINI_API_KEY")
-            if not api_key:
-                raise ValueError("GEMINI_API_KEY not found. Set it in .env or Render dashboard.")
-            
-            genai.configure(api_key=api_key)
-            
-            # Initialize the LangChain embeddings class
-            self.model = GoogleGenerativeAIEmbeddings(model=self.model_name)
-            print("Google AI Embedding model loaded successfully.")
-            # --- END CHANGED ---
-        except Exception as e:
-            print(f"Error Loading Model: {self.model_name} : {e}")
-            raise
-
-    # --- CHANGED ---
-    # Updated return type hint
-    def generate_embeddings(self, texts: list[str]) -> List[List[float]]: 
-        if not self.model:
-            raise ValueError("Model Not Loaded") 
-        
-        print(f"Generating embeddings for {len(texts)} texts via API...")
-        # --- CHANGED ---
-        # Use embed_documents() which returns List[List[float]]
-        embeddings = self.model.embed_documents(texts) 
-        print(f"Successfully generated {len(embeddings)} embeddings.")
-        return embeddings
-
-# ### 4. VectorStore Manager
+# --- 4. VECTOR STORE MANAGEMENT ---
 class VectorStore:
+    """Handles loading the embedding model and managing the ChromaDB collection."""
     def __init__(self, collection_name: str = "pdf_documents", persist_directory: str = "data/vector_store"):
         self.collection_name = collection_name
         self.persist_directory = persist_directory
         self.collection = None
+        
+        # Initialize the local SentenceTransformer model
+        try:
+            print("--- [INGESTION] Loading local SentenceTransformer Model ---")
+            # This model name matches the one in requirements.txt
+            model_name = "sentence-transformers/all-MiniLM-L6-v2"
+            # Run on CPU for ingestion. You can change to 'cuda' if you have a GPU.
+            model_kwargs = {'device': 'cpu'} 
+            
+            self.embedding_model = HuggingFaceEmbeddings(
+                model_name=model_name,
+                model_kwargs=model_kwargs
+            )
+            print(f"--- [INGESTION] Local Model '{model_name}' Loaded ---")
+        except Exception as e:
+            print(f"--- [INGESTION] Error loading embedding model: {e} ---")
+            raise
+
         self._initialize_store()
 
     def _initialize_store(self):
+        """Initializes the persistent ChromaDB client and resets the collection."""
         try:
             os.makedirs(self.persist_directory, exist_ok=True)
             self.client = chromadb.PersistentClient(path=self.persist_directory) 
+            
+            # Reset the collection every time we ingest new data
+            try:
+                self.client.delete_collection(name=self.collection_name)
+                print(f"--- [INGESTION] Deleted existing collection: {self.collection_name} ---")
+            except Exception as e:
+                # This is normal if the collection doesn't exist yet
+                print(f"--- [INGESTION] No existing collection to delete, creating new one. ---")
 
-            self.collection = self.client.get_or_create_collection(
+            # Create the new collection
+            self.collection = self.client.create_collection(
                 name=self.collection_name,
                 metadata={"description": "PDF document embeddings for RAG"}
             )
-
-            print(f"Vector store initialized. Collection: {self.collection_name}")
-            print(f"Existing documents in collection: {self.collection.count()}")
+            print(f"--- [INGESTION] Vector store initialized. Collection: {self.collection_name} ---")
 
         except Exception as e:
-            print(f"Error Initializing vector store: {e}")
+            print(f"--- [INGESTION] Error Initializing vector store: {e} ---")
             raise
 
-    # --- CHANGED ---
-    # Updated type hint for embeddings
-    def add_documents(self, documents: List[Any], embeddings: List[List[float]]): 
-        if len(documents) != len(embeddings):
-            raise ValueError("Number of documents must match number of embeddings")
-
-        print(f"Adding {len(documents)} documents to vector store...")
-
-        ids = []
-        metadata_list = []
-        documents_text = []
-        embeddings_list = []
-
-        for i, (doc, embedding) in enumerate(zip(documents, embeddings)):
-            doc_id = f"doc_{uuid.uuid4().hex[:8]}_{i}"
-            ids.append(doc_id)
-
-            meta = dict(doc.metadata)
-            meta['doc_index'] = i
-            meta['content_length'] = len(doc.page_content)
-            metadata_list.append(meta)
-
-            documents_text.append(doc.page_content)
+    def add_documents(self, documents: List[Any]):
+        """Embeds documents in batches and adds them to ChromaDB."""
+        print(f"--- [INGESTION] Adding {len(documents)} documents to vector store... ---")
+        
+        texts = [doc.page_content for doc in documents]
+        metadatas = [doc.metadata for doc in documents]
+        ids = [f"doc_{uuid.uuid4().hex}" for _ in texts]
+        
+        # Process in batches to manage memory
+        batch_size = 100 
+        for i in range(0, len(texts), batch_size):
+            batch_texts = texts[i:i+batch_size]
+            batch_metadatas = metadatas[i:i+batch_size]
+            batch_ids = ids[i:i+batch_size]
             
-            # --- CHANGED ---
-            # The embedding is already a list[float], no .tolist() needed
-            embeddings_list.append(embedding) 
+            try:
+                print(f"--- [INGESTION] Generating embeddings for batch {i//batch_size + 1} of {len(texts)//batch_size + 1} ---")
+                # Generate embeddings locally for this batch
+                batch_embeddings = self.embedding_model.embed_documents(batch_texts)
+                
+                print(f"--- [INGESTION] Adding batch {i//batch_size + 1} to Chroma ---")
+                self.collection.add(
+                    ids=batch_ids,
+                    embeddings=batch_embeddings,
+                    metadatas=batch_metadatas,
+                    documents=batch_texts
+                )
+                print(f"--- [INGESTION] Batch {i//batch_size + 1} successful. ---")
+                
+            except Exception as e:
+                print(f"--- [INGESTION] Error processing batch {i//batch_size + 1}: {e} ---")
+        
+        print(f"--- [INGESTION] Successfully added documents to vector store. ---")
+        print(f"--- [INGESTION] Total documents in collection: {self.collection.count()} ---")
 
-        try:
-            self.collection.add(
-                ids=ids,
-                embeddings=embeddings_list,
-                metadatas=metadata_list,
-                documents=documents_text
-            )
 
-            print(f"Successfully added {len(documents)} documents to vector store")
-            print(f"Total documents in collection: {self.collection.count()}")
-
-        except Exception as e:
-            print(f"Error adding documents to vector store: {e}")
-            raise
-
-# --- This is the main execution block that runs the script ---
+# --- THIS IS THE MAIN EXECUTION BLOCK THAT RUNS THE SCRIPT ---
+# --- THIS CODE ONLY RUNS WHEN YOU TYPE "python ingest.py" ---
 if __name__ == "__main__":
-    # --- CHANGED ---
-    # Load .env variables (GEMINI_API_KEY) before starting
-    print("Loading environment variables...")
-    load_dotenv() 
-    
     print("--- [START] DATA INGESTION ---")
     
+    # 1. Load PDFs from the 'data/pdf' folder
     all_pdf_documents = process_all_pdfs("data/pdf")
     
     if all_pdf_documents:
+        # 2. Split into chunks
         chunks = split_documents(all_pdf_documents)
         
-        # This will now use the Google API via EmbeddingManager
-        embedding_manager = EmbeddingManager() 
+        # 3. Initialize the VectorStore (which also initializes the embedding model)
         vectorstore = VectorStore(persist_directory="data/vector_store")
         
-        texts = [doc.page_content for doc in chunks]
-        embeddings = embedding_manager.generate_embeddings(texts)
-        
-        vectorstore.add_documents(chunks, embeddings)
+        # 4. Add documents (embedding is handled inside this method)
+        vectorstore.add_documents(chunks)
         
         print("--- [SUCCESS] DATA INGESTION COMPLETE ---")
     else:
         print("--- [SKIP] NO PDFS FOUND IN 'data/pdf'. SKIPPING INGESTION. ---")
+
